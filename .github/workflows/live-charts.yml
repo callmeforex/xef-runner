@@ -1,0 +1,138 @@
+name: Live Charts (gold, fast)
+
+# WHY THIS WORKFLOW EXISTS
+# ------------------------
+# The charts page could only grow bars while a tab was open, and the packaged files were only
+# rebuilt by the 3-hourly refresh — so a reopened tab showed stale bars and any missed minute
+# stayed missing (the user's two complaints). The browser cannot fix that itself: TradingView's
+# datafeed sockets refuse this origin (audit/probe_widgetsocket.js -> opened:false), so the page
+# can never ask the venue for the minutes it missed.
+#
+# A runner can. This job speaks TradingView's anonymous chart datafeed for the exact symbol the
+# chart is labelled with (OANDA:XAUUSD), publishes `public/feed/xauusd.json` + `feed/asof.json`,
+# and deploys. The page polls `asof.json` every 30 s and splices new bars into the open charts, so
+# a hole closes without a reload.
+#
+# COST (private repo, 2,000 Actions minutes/month)
+# ------------------------------------------------
+# One run here is ~15 s of work + the deploy, i.e. 1 billed minute. The cron below therefore only
+# fires while the gold market can actually produce new bars (Sun 21:00 UTC -> Fri 21:00 UTC), and
+# is denser during the London/NY overlap:
+#     */20  12-16 * * 1-5   15 runs/day   (13:00-17:59 UTC, the liquid hours)
+#     */30  0-11,17-23 * * 1-5   38 runs/day
+#     */30  21-23 * * 0      6 runs/week  (Sunday reopen)
+#   ≈ 38 runs/day ≈ 1,150 min/month, and ZERO on the weekend when there is nothing to collect.
+# The 3-hourly full refresh (480 min/month) keeps its own cadence and its own cost guard.
+
+on:
+  schedule:
+    - cron: "*/20 12-16 * * 1-5"          # London/NY overlap: 20-minute freshness
+    - cron: "*/30 0-11,17-23 * * 1-5"     # rest of the trading week: 30-minute freshness
+    - cron: "*/30 21-23 * * 0"            # Sunday session open
+  workflow_dispatch:
+
+concurrency:
+  # R103 — this used to be its own group ('live-charts'), so a 20-minute tick collection
+  # could run CONCURRENTLY with the nightly desk build and push its own tree over the bias
+  # and setups that had just been published. Both workflows deploy the same two Surge
+  # sites, so they must take the same lock: whichever starts second waits, and the tree it
+  # deploys is the newer one (the provenance guard in deploy-sites.sh refuses a downgrade
+  # even if this is ever loosened again).
+  group: xef-desk                        # same lock as the desk build — never two deploys at once
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          repository: callmeforex/xau-elite-fx
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Map /home/user to the repo + install the datafeed client
+        run: |
+          sudo ln -s "$GITHUB_WORKSPACE" /home/user
+          python3 --version
+          python3 -m pip install --quiet --disable-pip-version-check websocket-client
+
+      # A delayed schedule firing on top of an on-time one would pay twice for the same bars.
+      # Scheduled runs therefore no-op unless the LIVE feed is at least 8 minutes old.
+      - name: Cost guard — skip when the live feed is already fresh
+        id: guard
+        run: |
+          AGE=$(python3 - <<'EOF'
+          import json, datetime, urllib.request
+          try:
+              j = json.load(urllib.request.urlopen("https://xau-elite-fx.surge.sh/feed/asof.json?t=1", timeout=20))
+              t = datetime.datetime.strptime(j["asOf"], "%Y-%m-%dT%H:%M:%SZ")
+              print(int((datetime.datetime.utcnow() - t).total_seconds() / 60))
+          except Exception:
+              print(-1)
+          EOF
+          )
+          echo "live feed age: ${AGE} min (event: ${{ github.event_name }})"
+          if [ "$AGE" -ge 0 ] && [ "$AGE" -lt 8 ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Skipped::live feed is ${AGE} min old"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Collect OANDA:XAUUSD from TradingView's datafeed
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python3 -m refresh.tv_snapshot XAUUSD | tee /tmp/snapshot.json
+          python3 - <<'EOF'
+          import json, sys
+          txt = open('/tmp/snapshot.json').read()
+          start = txt.index('{')
+          d = json.loads(txt[start:])
+          assert d['series'] >= 7, 'only %d timeframes came back' % d['series']
+          print('collected %d series, newest bar %dZ' % (d['series'], int(d['newestBar'])))
+          EOF
+
+      # R69: the positioning chain and the depth terminal read this snapshot. Their HTTP
+      # endpoints refuse a browser on our domain (no CORS), so a server reads them here and
+      # the pages fetch one file from our own site. Provider and venue names are replaced
+      # with neutral labels inside the file, which is why it can be served publicly.
+      - name: Collect the book / positioning snapshot
+        run: python3 tools/fetch-book-snapshot.py
+
+      - name: Deploy both sites
+        if: steps.guard.outputs.proceed == 'true'
+        env:
+          SURGE_LOGIN: ${{ secrets.SURGE_LOGIN }}
+          SURGE_TOKEN: ${{ secrets.SURGE_TOKEN }}
+        run: bash /home/user/deploy-sites.sh
+
+      - name: Verify the LIVE site serves this collection
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          python3 - <<'EOF'
+          import json, time, urllib.request, os
+          want = json.load(open(os.environ['GITHUB_WORKSPACE'] + '/xau-elite-fonda/public/feed/asof.json'))
+          for attempt in range(8):
+              try:
+                  got = json.load(urllib.request.urlopen(
+                      'https://xau-elite-fx.surge.sh/feed/asof.json?t=%d' % time.time(), timeout=20))
+                  if got.get('asOf') == want['asOf'] and got.get('barSec') == want['barSec']:
+                      print('LIVE feed matches this run: %s' % got['asOf'])
+                      raise SystemExit(0)
+              except SystemExit:
+                  raise
+              except Exception as e:
+                  print('  waiting for surge…', e)
+              time.sleep(5)
+          raise SystemExit('LIVE feed still not serving %s' % want['asOf'])
+          EOF
+
+      # NOT committed on purpose: surge is the delivery path, and committing ~1 MB of fresh
+      # bars every 20 minutes would bloat the repo (and race other jobs on the same files).
+      # The 3-hourly full refresh keeps the in-repo chartdata + manifest snapshots.

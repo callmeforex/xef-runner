@@ -1,0 +1,39 @@
+name: LBMA source D route check
+
+# WHY THIS EXISTS
+# ---------------
+# Source D of the seasonality engine is the LBMA Gold Price PM benchmark. The official LBMA
+# publication endpoint (prices.lbma.org.uk) is Cloudflare-protected and refuses datacenter IPs,
+# so the engine walks a route chain: LBMA direct -> World Gold Council (gold.org) daily gold feed.
+# A fallback silently going stale, changing shape or getting blocked is the exact failure that made
+# source D disappear in the first place. This job runs the engine's checker on a real GitHub runner
+# (a different network from any single workstation) and fails loudly if D stops resolving.
+#
+# COST: ~2 billable minutes per run, weekly = ~8 minutes/month. Run it on demand with
+# "Run workflow" after any change to fetch-seasonality.py or check-lbma-source.py.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * 1"          # Mondays 06:23 UTC, before the London session
+
+permissions:
+  contents: read
+
+jobs:
+  source-d:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          repository: callmeforex/xau-elite-fx
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Map /home/user to the repo (the scripts resolve their paths from /home/user)
+        run: sudo ln -s "$GITHUB_WORKSPACE" /home/user
+
+      # One step: human-readable verdict on the log, machine-readable copy next to the run so a
+      # future audit can see which route supplied the benchmark and what the cross-check said.
+      - name: Check source D (LBMA Gold Price PM) resolves and is verified
+        run: python3 -u check-lbma-source.py --out verdict.json
