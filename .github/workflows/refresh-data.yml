@@ -261,8 +261,9 @@ jobs:
       - name: All 34 — sniper setups for the day (one call per pair; stale-only here)
         if: steps.costguard.outputs.proceed == 'true'
         env:
+          CI_KEY: ${{ secrets.CI_KEY }}
           ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
-          GOLD_MODEL: gpt-6.1-sol
+          GOLD_MODEL: ampersand-v0.1
           PAIR_MODEL: glm-5.3-flash
           GOLD_EFFORT: high
           PAIR_EFFORT: medium
@@ -316,6 +317,9 @@ jobs:
           git config user.email "actions@github.com"
           # the manifest is the audit trail; the data files themselves are rebuilt every run,
           # so they are only committed when the daily cycle snapshots the tree
-          git add -A xau-elite-fonda/public/data-freshness.json xau-elite-fonda2/public/data-freshness.json
+          git add -A xau-elite-fonda/public/data-freshness.json xau-elite-fonda2/public/data-freshness.json \
+            xau-elite-fonda/public/macro-history.json xau-elite-fonda2/public/macro-history.json \
+            xau-elite-fonda/public/terminal-data.js xau-elite-fonda2/public/terminal-data.js \
+            xau-elite-fonda/public/fundamental-verdicts.json xau-elite-fonda2/public/fundamental-verdicts.json
           git commit -m "data: page refresh $(date -u +%F_%H%M)Z" || echo "nothing to commit"
           git push || echo "push skipped"
