@@ -228,8 +228,8 @@ jobs:
           CI_KEY: ${{ secrets.CI_KEY }}
           GOLD_MODEL: beam-free
           PAIR_MODEL: beam-free
-          GOLD_EFFORT: low
-          PAIR_EFFORT: low
+          GOLD_EFFORT: high
+          PAIR_EFFORT: medium
           BIAS_WORKERS: '6'
           TD_KEY: ${{ secrets.TD_KEY }}
           LSE_API_KEY: ${{ secrets.LSE_API_KEY || secrets.LSE }}
@@ -301,12 +301,12 @@ jobs:
         env:
           ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
           CI_KEY: ${{ secrets.CI_KEY }}
-          ASHNA_MODEL: gpt-6.1-sol
+          ASHNA_MODEL: beam-free
           FONDA_EFFORT: high
           XEF_CHART_ALL: ${{ (env.CYCLE == 'daily-bias' || github.event_name == 'schedule') && '1' || '' }}
         run: |
-          if [ "$CYCLE" = "daily-bias" ] && [ -f /home/user/xau-elite-fonda/public/data-freshness.json ]; then
-            echo "daily-bias already refreshed every page dataset inside run-full-chain.sh — skipping duplicate pass"
+          if [ "$CYCLE" = "daily-bias" ]; then
+            XEF_CHART_ALL=0 python3 /home/user/refresh-page-data.py --allow-partial || echo "::warning::page refresh had failures (see log)"
           else
             python3 /home/user/refresh-page-data.py --allow-partial || echo "::warning::page refresh had failures (see log)"
           fi

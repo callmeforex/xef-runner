@@ -159,8 +159,8 @@ jobs:
           CI_KEY: ${{ secrets.CI_KEY }}
           GOLD_MODEL: beam-free
           PAIR_MODEL: beam-free
-          GOLD_EFFORT: low
-          PAIR_EFFORT: low
+          GOLD_EFFORT: high
+          PAIR_EFFORT: medium
           BIAS_WORKERS: '6'
         run: |
           cd /home/user
