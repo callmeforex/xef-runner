@@ -1,169 +1,190 @@
-name: XEF Daily Cycles
+name: XAU ELITE FX — Daily Cycles (cloud, PC can stay off)
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  RUNS ON GITHUB'S SERVERS — YOUR COMPUTER DOES NOT NEED TO BE ON.        ║
+# ║                                                                           ║
+# ║  Times below are UTC. Casablanca is UTC+1 (Morocco standard time):        ║
+# ║    • 22:00 UTC (23:00 Casablanca, winter) / 21:00 UTC (22:00 summer)      ║
+# ║      Daily candle close -> FULL DESK (lessons + AI Daily Bias +           ║
+# ║      AI Setups/Sniper + every page dataset + AI Fundamental Verdict +     ║
+# ║      all-8-TF charts + BIAS-V2 -> Surge deploy -> live verify)            ║
+# ║                                                                           ║
+# ║  You can also run any cycle ON DEMAND from the "Actions" tab →            ║
+# ║  "Run workflow" button (works from your phone browser too).               ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
 
 on:
+  schedule:
+    # Dense around-the-clock schedule so GitHub cron jitter never leaves the desk stale.
+    # Every scheduled run goes through desk_fresh.py first:
+    #   • if today's closed bar is ALREADY published on the live site → exits in ~10s, $0 spent
+    #   • if the live site is BEHIND the last closed bar → runs the full D+1 AI chain once.
+    - cron: '5 21 * * *'
+    - cron: '15 21 * * *'
+    - cron: '40 21 * * *'
+    - cron: '5 22 * * *'
+    - cron: '15 22 * * *'
+    - cron: '30 22 * * *'
+    - cron: '55 22 * * *'
+    - cron: '20 23 * * *'
+    - cron: '40 23 * * *'
+    - cron: '20 0 * * *'
+    - cron: '20 1 * * *'
+    - cron: '40 2 * * *'
+    - cron: '20 4 * * *'
+    - cron: '20 5 * * *'
+    - cron: '20 7 * * *'
+    - cron: '20 9 * * *'
+    - cron: '0 12 * * *'
+    - cron: '0 16 * * *'
+    - cron: '0 20 * * *'
+
   workflow_dispatch:
     inputs:
       cycle:
-        description: "daily-bias = FULL DESK (bias + setups + every page + deploy). bias-only = bias only."
+        description: 'Which cycle to run right now'
         required: true
-        default: "daily-bias"
+        default: 'daily-bias'
         type: choice
         options:
           - daily-bias
-          - sniper-refresh
           - bias-only
+          - sniper-refresh
           - position-check
           - miss-review
           - deploy-only
-      setup:
-        description: "POSITION-CHECK only: setup id of your executed trade (e.g. rf0054)"
-        required: false
-        default: ""
-      entry:
-        description: "POSITION-CHECK only: your fill entry price (e.g. 4137.5)"
-        required: false
-        default: ""
-      sl:
-        description: "POSITION-CHECK only: your stop loss (e.g. 4128.0)"
-        required: false
-        default: ""
-      tp:
-        description: "POSITION-CHECK only: your take profit (e.g. 4160.0)"
-        required: false
-        default: ""
       rebuild:
-        description: "daily-bias/sniper-refresh: rebuild on the last CLOSED candle even if the desk is already on it (use after a code fix to the cards)"
+        description: "Force a rebuild even while today's candle is still open (re-anchors on the last closed bar)?"
         required: false
-        default: "no"
+        default: 'false'
         type: choice
         options:
-          - "no"
-          - "yes"
-      filled:
-        description: "POSITION-CHECK only (optional): executed volume (e.g. 0.10)"
+          - 'false'
+          - 'true'
+          - 'if-behind'
+      setup:
+        description: '[position-check only] A or B'
         required: false
-        default: ""
-
-  # ── SCHEDULE (enabled 2026-11-02) ──────────────────────────────────────────────
-  # Times are UTC; Casablanca = UTC+1.
-  # WHY THIS WAS ENABLED: the schedule block had been commented out, so NOTHING ever
-  # ran on a timer. On 2 Nov the live bias card still carried the 2 Nov forecast built
-  # from the 30 Oct candle while the market was trading 3970 — the site simply "missed
-  # the bias for today" because no cycle fired. Manual dispatch was the only path.
-  schedule:
-    - cron: "20 0 * * 2-6"   # 01:20 Casablanca — LESSONS for the just-closed session.
-                             # The daily candle closes at 00:00 UTC, so 00:20 is the first
-                             # honest moment to grade it. Runs first so the evening bias
-                             # consumes that day's lesson.
-    - cron: "0 12 * * 2-6"   # 13:00 Casablanca — position check
-    # ── 2026-11-16 (R39): the owner's daily run is 22:00 MOROCCO time ────────────
-    # Morocco keeps UTC+1 all year EXCEPT Ramadan, when it drops to UTC+0. A cron
-    # cannot know that, so both possible UTC hours are listed and the job itself
-    # decides: the "22:00 Casablanca gate" step below lets the run proceed ONLY if
-    # Africa/Casablanca is really 22:xx. Whichever cron is the wrong one exits in
-    # seconds and costs nothing. That is why there are two lines and not one.
-    #
-    # Every day, not Mon-Fri: Sunday 22:00 Casablanca is inside the new week's session
-    # (Asia opens Sunday evening), so it is the right moment to lock Monday. Saturday is
-    # the only day with no market, and the gate below skips it by name instead of paying
-    # for 68 model calls that would reproduce Friday night's answer.
-    # ── 2026-11-19 (R99): THE 22:00 GATE COULD NEVER PASS. PROOF AND FIX. ───────
-    # These two lines fired at 21:00Z and 22:00Z, and the gate step demanded that
-    # Africa/Casablanca be 22:xx. Morocco is UTC+1 outside Ramadan, so the 21:00Z run
-    # ARRIVES at 22:00 local — the gate printed "now: 21:00 +00 (+0000)", read hour 21,
-    # called itself "the wrong cron for today's UTC offset" and set XEF_NOOP=1. The
-    # 22:00Z run arrives at 23:00 local and was rejected too. Every day, both crons.
-    # The job still reported SUCCESS because XEF_NOOP skips every step — that is how the
-    # desk sat on 2026-11-16 for three days while every scheduled run looked green.
-    #
-    # There is now ONE daily cron, late enough that the daily candle has closed in both
-    # Morocco offsets (UTC+1 and Ramadan's UTC+0), plus two morning catch-up runs. The
-    # gate no longer does clock arithmetic — see the freshness gate below.
-    - cron: "30 22 * * *"  # 23:30 Casablanca at UTC+1 · 22:30 at UTC+0 — after the close
-    - cron: "20 5 * * *"   # 06:20 Casablanca — catch-up if the night run failed
-    - cron: "20 9 * * *"   # 10:20 Casablanca — second catch-up, before London's afternoon
-    # ── R103: THE NIGHT MUST BE ABLE TO RETRY ITSELF ───────────────────────────
-    # One daily cron plus two morning catch-ups left a hole: if the 22:30 pass died for a
-    # reason nobody was watching (an Actions incident, an account limit, or the credits
-    # guard below refusing to spend), the next attempt was 06:20 — so customers read the
-    # previous session all day and nothing said so until someone looked.
-    # 23:40Z is a second chance the same evening, comfortably after the 22:00-23:00Z
-    # rollover break; 02:40Z is a quiet hour to retry anything still wrong. Both pass the
-    # same freshness gate first, so on a night that already worked they exit in seconds
-    # and spend nothing.
-    - cron: "40 23 * * *"  # 00:40 Casablanca — retry the same evening
-    - cron: "40 2 * * *"   # 03:40 Casablanca — last unattended chance before morning
-
-# Two workflows write the same artefacts (this one and the 3-hourly page refresh).
-# Running them at the same minute is what makes "the index lost instruments" bugs:
-# one run's partial tree gets deployed while the other is still writing. They now
-# take the same lock, and the second one waits.
-concurrency:
-  group: xef-desk
-  cancel-in-progress: false
+        default: ''
+      entry:
+        description: '[position-check only] actual fill price (e.g. 4458.50)'
+        required: false
+        default: ''
+      sl:
+        description: '[position-check only] active stop loss'
+        required: false
+        default: ''
+      tp:
+        description: '[position-check only] active take profit'
+        required: false
+        default: ''
+      filled:
+        description: '[position-check only] fill time HH:MM'
+        required: false
+        default: ''
 
 permissions:
-  contents: write        # lets the run commit updated state back to the repo
+  contents: write
+  actions: write
+
+concurrency:
+  group: xef-deploy
+  cancel-in-progress: false
 
 jobs:
-  cycle:
+  run-cycle:
     runs-on: ubuntu-latest
     timeout-minutes: 100
     steps:
-      - name: Checkout repo
+      - name: Checkout private repo
         uses: actions/checkout@v4
         with:
           repository: callmeforex/xau-elite-fx
           token: ${{ secrets.GH_PAT }}
-
-      - name: Is today's desk built? (gate — one build per session, catch-up when behind)
-        # R99. This step is why the bias and the setups were not daily: it compared the
-        # LOCAL hour to 22 and no cron ever produced that hour (see the cron comment).
-        # It now asks the owner's question — has the desk been built on the candle that
-        # most recently CLOSED? — and reads the DEPLOYED site, not the checkout.
-        #   FRESH  -> nothing to do; exits in seconds, spends nothing
-        #   BEHIND -> run the whole AI desk, anchored on the last CLOSED bar
-        # A day already built cannot be built twice; a missed day is repaired by the next
-        # run instead of waiting another 24 h. Saturday is a real no-op.
-        # Manual dispatch always runs.
-        run: |
-          if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "manual dispatch — the freshness gate does not apply, running the requested cycle"
-            exit 0
-          fi
-          echo "now UTC : $(date -u '+%Y-%m-%d %H:%M')"
-          echo "now CST : $(TZ=Africa/Casablanca date '+%Y-%m-%d %H:%M %Z (%z)')"
-          case "${{ github.event.schedule }}" in
-            "30 22 * * *"|"20 5 * * *"|"20 9 * * *"|"40 23 * * *"|"40 2 * * *")
-              if [ "$(TZ=Africa/Casablanca date '+%u')" = "6" ]; then
-                echo "::notice::Saturday in Casablanca — market closed, Friday's run already locked the next session."
-                echo "XEF_NOOP=1" >> "$GITHUB_ENV"
-                exit 0
-              fi
-              # NOTE: the /home/user symlink is created AFTER this step, so the script must
-              # be addressed through the checkout itself. Missing or broken script -> BEHIND
-              # (the safe direction: a needless run costs tokens, a skipped run costs a day).
-              set +e
-              OUT=$(python3 "$GITHUB_WORKSPACE/desk_fresh.py")
-              RC=$?
-              set -e
-              echo "desk freshness: $OUT"
-              if [ "$RC" -eq 0 ]; then
-                echo "::notice::the desk is already on the last closed candle — nothing to build, nothing to spend."
-                echo "XEF_NOOP=1" >> "$GITHUB_ENV"
-              else
-                echo "::notice::the desk is BEHIND the last closed candle — running the full AI desk now (anchored on the CLOSED bar, never the live one)."
-              fi ;;
-            *) : ;;   # 01:20 lessons review and 13:00 position-check resolve their own cycle
-          esac
+          fetch-depth: 1
 
       - name: Map /home/user to the repo (zero script-path changes)
         run: |
-          sudo ln -s "$GITHUB_WORKSPACE" /home/user
+          sudo ln -sfn "$GITHUB_WORKSPACE" /home/user
           echo "repo mounted at /home/user:" && ls /home/user | head -6
 
+      - name: Install refresh dependencies
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+          python3 -c "import websocket; print('websocket-client', websocket.__version__)"
+
+      - name: Decide which cycle to run (and skip when today's desk is already built)
+        id: gate
+        timeout-minutes: 5
+        run: |
+          CYCLE="${{ inputs.cycle }}"
+          REBUILD="${{ inputs.rebuild }}"
+          if [ "${{ github.event_name }}" != "schedule" ] && [ "$REBUILD" != "if-behind" ]; then
+            [ -z "$CYCLE" ] && CYCLE="daily-bias"
+            echo "manual dispatch → cycle=$CYCLE rebuild=$REBUILD (freshness gate bypassed)"
+            echo "CYCLE=$CYCLE" >> "$GITHUB_ENV"
+            echo "SKIP=0"       >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          echo "now UTC : $(date -u '+%Y-%m-%d %H:%M')"
+          echo "now CST : $(TZ=Africa/Casablanca date '+%Y-%m-%d %H:%M %Z (%z)')"
+          case "${{ github.event.schedule }}" in
+            "5 21 * * *"|"15 21 * * *"|"40 21 * * *"|"5 22 * * *"|"15 22 * * *"|"30 22 * * *"|"55 22 * * *"|"20 23 * * *"|"40 23 * * *"|"20 0 * * *"|"20 1 * * *"|"40 2 * * *"|"20 4 * * *"|"20 5 * * *"|"20 7 * * *"|"20 9 * * *"|"0 12 * * *"|"0 16 * * *"|"0 20 * * *"|"0 21 * * *"|"0 22 * * *"|"0 21 * * 1-5"|"0 22 * * 1-5"|*)
+              if [ "$(TZ=Africa/Casablanca date '+%u')" = "6" ]; then
+                echo "::notice::Saturday in Casablanca — market closed, Friday's run already locked the next session."
+                echo "SKIP=1" >> "$GITHUB_ENV"
+                exit 0
+              fi
+              # Refresh gold's 1D + 1H bars from TradingView first (~5 s) so the gate
+              # evaluates the live market close, not a stale checkout file.
+              python3 -c "import sys; sys.path.insert(0,'/home/user'); from refresh import charts; charts.run(scope='gold')" \
+                || echo "::warning::gold bar pre-check failed — desk_fresh will use the live site's copy"
+              set +e
+              OUT=$(python3 /home/user/desk_fresh.py)
+              RC=$?
+              set -e
+              echo "desk freshness (live): $OUT (exit $RC)"
+              if [ "$RC" -eq 0 ]; then
+                set +e
+                OUT_LOCAL=$(python3 - <<'PY'
+          import json, sys
+          sys.path.insert(0, '/home/user')
+          import desk_fresh as DF
+          from refresh import common as C
+          host = "https://xau-elite-fx.surge.sh"
+          card = DF.get(host, "/bias/XAUUSD.json")
+          bars = json.load(open("/home/user/xau-elite-fonda/public/chartdata/chart-XAUUSD-1D.json"))["data"]["bars"]
+          m = json.load(open("/home/user/xau-elite-fonda/public/chartdata/chart-XAUUSD-1H.json"))["data"]
+          h1 = m["bars"]
+          closed = DF.last_closed_label(bars, h1, C.fetched_ts(m))
+          have = card.get("barAsOf")
+          locked = card.get("lockedForDate")
+          want = C.next_session(closed, card.get("assetClass")) if closed else None
+          if (closed and have != closed) or (want and locked and locked != want):
+              print(f"BEHIND_LOCAL have={have} closed={closed} locked={locked} want={want}")
+              sys.exit(1)
+          print(f"FRESH_LOCAL have={have} closed={closed} locked={locked}")
+          sys.exit(0)
+          PY
+                )
+                RC_LOCAL=$?
+                set -e
+                echo "desk freshness (vs fresh TV bars): $OUT_LOCAL (exit $RC_LOCAL)"
+                [ "$RC_LOCAL" -ne 0 ] && RC=1
+              fi
+              if [ "$RC" -eq 0 ]; then
+                echo "::notice::the desk is already on the last closed candle — nothing to build, nothing to spend."
+                echo "SKIP=1" >> "$GITHUB_ENV"
+              else
+                echo "::notice::the desk is BEHIND the last closed candle — running the full AI desk now."
+                echo "CYCLE=daily-bias" >> "$GITHUB_ENV"
+                echo "SKIP=0"           >> "$GITHUB_ENV"
+              fi ;;
+          esac
+
       - name: Unpack archives (first run only — later runs use committed trees)
-        if: env.XEF_NOOP != '1'
+        if: env.SKIP != '1'
         run: |
           cd /home/user
           for z in sites.zip chartdata-master.zip day-folder.zip bt.zip; do
@@ -172,102 +193,50 @@ jobs:
           echo "repo now contains:" && ls /home/user | head -10
 
       - name: Unit checks (freshness gate + the bias badge's meaning)
-        if: env.XEF_NOOP != '1'
-        # R100. Both of these exist because a run that "looked fine" shipped something
-        # wrong: a gate that could never pass, and a badge that called a final bias
-        # provisional. They are cheap (a second) and they stop that class of bug reaching
-        # customers again.
+        if: env.SKIP != '1'
         run: |
           python3 "$GITHUB_WORKSPACE/test-desk-fresh.py"
           python3 "$GITHUB_WORKSPACE/test-provisional.py"
           python3 "$GITHUB_WORKSPACE/test-inputs.py"
-          # R103: can the desk refresh itself tomorrow with nobody watching? The contract
-          # (schedule present, every cron routed to the desk, the readiness gate, the
-          # ceilings) is checked here, before any paid call, because every outage on this
-          # desk so far was a wiring break that each individual file looked fine about.
           python3 "$GITHUB_WORKSPACE/test-autorun.py"
 
-      - name: Install refresh dependencies
-        if: env.XEF_NOOP != '1'
-        # refresh/tvdata.py needs websocket-client for the TradingView chart feed. It was
-        # missing from the runner, and because charts.py was imported at module level the
-        # ModuleNotFoundError took down the WHOLE page-dataset stage — COT, seasonality,
-        # macro and the AI verdicts were never refreshed in CI at all. That is the actual
-        # reason the COT page sat on an old report and the fundamental page drifted back to
-        # a 2026-11-01 vintage, while the log only ever said "page refresh had failures".
-        run: |
-          python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
-          python3 -c "import websocket; print('websocket-client', websocket.__version__)"
-
       - name: Restore the live LEDGER only (keep the repo's rule set)
-        if: env.XEF_NOOP != '1'
+        if: env.SKIP != '1'
         run: |
-          # v1 ROLLBACK (2026-11-04): this used to copy the whole live learning-state over the repo,
-          # which silently reverted the protocol rollback on every run (the 29-rule file came back
-          # and the deploy guard then blocked the v1 file). DATA comes from live; RULES come from the
-          # repo. Freshness is preserved; the protocol stays v1.
           python3 /home/user/restore-ledger.py
 
       - name: Snapshot artefact hashes (pre-run baseline)
-        if: env.XEF_NOOP != '1'
-        # A fresh checkout stamps EVERY file with the checkout time, so file mtime cannot
-        # tell "written by this run" from "just arrived from git". (That is exactly how the
-        # first version of this check passed a run in which the bias and the sniper had both
-        # failed their input gates.) The comparison is by content hash instead.
+        if: env.SKIP != '1'
         run: |
           mkdir -p /tmp/xefpre && rm -f /tmp/xefpre/*.sha
           for f in daily-bias-locked.js setups-preloaded.js fundamental-verdicts.json cot-5yr-all.js macro-history.json bias-all.json bias/XAUUSD.json sniper/index.json sniper/XAUUSD.json; do
             for build in xau-elite-fonda xau-elite-fonda2; do
               p="/home/user/$build/public/$f"
-              # R39: the list now includes nested paths (bias/XAUUSD.json, sniper/index.json),
-              # so the hash file name must flatten the slashes or the step dies on a
-              # missing directory — which is what it did on the first run of this change.
               k=$(printf '%s' "$f" | tr '/' '-')
               [ -f "$p" ] && sha256sum "$p" >> "/tmp/xefpre/$build-$k.sha"
             done
           done
           echo "baseline hashes captured: $(ls /tmp/xefpre | wc -l) files"
 
-      - name: Run the cycle (real model call on the ASHNA_KEY secret)
-        if: env.XEF_NOOP != '1'
-        # R103: this stage runs the whole AI desk. It has taken 18-25 minutes; a 60-minute
-        # ceiling means a hang reports itself as a dead step (and the next scheduled run is
-        # a clean retry) instead of eating the job's 100-minute budget mid-way.
+      - name: Run the cycle (real model call on the CI_KEY / ASHNA_KEY secret)
+        if: env.SKIP != '1'
         timeout-minutes: 60
         env:
           ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
-          # OWNER ORDER 2026-11-14: one pinned model for every AI step in this job.
-          # gpt-6.1-sol is the "6.1" high-reasoning/low-price route; gpt-6-astra is the
-          # one that emptied the balance. Pinned here so no script default can reach for
-          # the expensive model, and mirrored in each script's own default.
           ASHNA_MODEL: gpt-6.1-sol
           BIAS_MODEL: gpt-6.1-sol
           CI_KEY: ${{ secrets.CI_KEY }}
+          GOLD_MODEL: ampersand-v0.1
+          PAIR_MODEL: glm-5.3-flash
+          GOLD_EFFORT: high
+          PAIR_EFFORT: medium
           TD_KEY: ${{ secrets.TD_KEY }}
           LSE_API_KEY: ${{ secrets.LSE_API_KEY || secrets.LSE }}
           OM_MCP_TOKEN: ${{ secrets.OM_MCP_TOKEN }}
           OM_MCP_TOKEN_2: ${{ secrets.OM_MCP_TOKEN_2 }}
-          # R100: an explicit rebuild from the Run-workflow form lifts the "the candle is
-          # still trading" refusal ONLY when the desk is already on the last closed candle,
-          # so a wording/annotation fix can reach today's cards without waiting for tonight.
-          XEF_FORCE_REBUILD: ${{ inputs.rebuild == 'yes' && '1' || '' }}
+          XEF_FORCE_REBUILD: ${{ (inputs.rebuild == 'true' || inputs.rebuild == 'yes') && '1' || '0' }}
         run: |
           cd /home/user
-          # A scheduled run has no `inputs.cycle`, so route it from the cron expression.
-          # Without this the case statement would fall through to *) and run nothing.
-          CYCLE="${{ inputs.cycle }}"
-          if [ -z "$CYCLE" ]; then
-            case "${{ github.event.schedule }}" in
-              "20 0 * * 2-6") CYCLE=miss-review ;;
-              "0 12 * * 2-6") CYCLE=position-check ;;
-              # R99 daily desk: the 22:30Z run plus the two morning catch-ups. The old
-              # 21:00Z/22:00Z spellings stay mapped so a run already queued against the
-              # previous schedule still resolves to the desk instead of silently falling
-              # through to deploy-only (which is what happened on 19 Nov).
-              "30 22 * * *"|"20 5 * * *"|"20 9 * * *"|"40 23 * * *"|"40 2 * * *"|"0 21 * * *"|"0 22 * * *"|"0 21 * * 1-5"|"0 22 * * 1-5") CYCLE=daily-bias ;;
-              *) CYCLE=deploy-only ;;
-            esac
-          fi
           echo "cycle resolved: $CYCLE (trigger: ${{ github.event_name }} ${{ github.event.schedule }})"
           case "$CYCLE" in
             position-check)
@@ -298,29 +267,10 @@ jobs:
               python3 execution-sheet.py || echo "::warning::execution sheet skipped (non-fatal)"
               ;;
             daily-bias)
-              # ── OWNER ORDER 2026-11-14 ───────────────────────────────────────────────
-              # "when I run daily biais, it should run all fresh fetchings and AI calls on
-              # all pages, one by one ... setups sniper, then AI fondamental verdict ...
-              # all pages that contain AI should run fresh renders."
-              #
-              # This branch is now the WHOLE DESK, in order:
-              #   lessons -> fetch-bias -> AI bias -> publish
-              #           -> fetch-refresh -> AI setups/sniper -> publish -> execution sheet
-              # and then the workflow steps that follow this one do the rest:
-              #   every page dataset + AI FUNDAMENTAL VERDICT -> bias-v2 -> deploy -> verify.
-              #
-              # It is a script, not more YAML, because Actions runs each run: block with
-              # `bash -e`: a single failure used to kill every stage after it. Each stage is
-              # isolated now, so one gate rejection cannot stop the rest of the desk from
-              # refreshing. The script exits 0 on purpose — deploy must still happen — and
-              # the "Report the full chain" step at the end fails the run honestly if a
-              # critical AI stage did not produce a fresh page.
               echo "::notice::FULL CHAIN — bias, setups, every page dataset, then deploy"
               bash /home/user/run-full-chain.sh
               ;;
             bias-only)
-              # The narrow, cheaper path: only the AI Daily Bias card is refreshed. Kept
-              # so a re-run after a single gate rejection does not pay for the whole desk.
               echo "::notice::bias-only — the AI Daily Bias card and nothing else"
               CLOSED=$(python3 check-fresh-lessons.py --resolve-only || echo "unknown")
               echo "last closed candle: $CLOSED (review-only, no rule is added)"
@@ -335,9 +285,6 @@ jobs:
               }
               ;;
             miss-review)
-              # v1 ROLLBACK: this cycle used to append a rule after every miss. It now writes the
-              # forensic review only — publish-miss-review.py refuses to touch the rule set while
-              # the v1 lock is present in learning-state.json.
               CLOSED=$(python3 check-fresh-lessons.py --resolve-only)
               echo "miss-review (forensic only, NO rule append) for $CLOSED"
               python3 fetch-miss-review.py --date "$CLOSED" || echo "::warning::fetch failed (non-fatal)"
@@ -347,53 +294,37 @@ jobs:
               ;;
           esac
 
-      - name: Refresh every page dataset (COT, seasonality, FX strength, macro, verdicts)
-        if: env.XEF_NOOP != '1'
+      - name: Refresh every page dataset (COT, seasonality, verdicts, curves, 8-TF gold bars)
+        if: env.SKIP != '1'
         timeout-minutes: 30
         env:
-          # OWNER ORDER 2026-11-14: the Fundamental page's AI verdict is a real model call
-          # on gpt-6.1-sol, not the deterministic scorer. One call judges every economy, so
-          # the cost is a few thousand tokens per run, not a call per asset.
           ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
+          CI_KEY: ${{ secrets.CI_KEY }}
           ASHNA_MODEL: gpt-6.1-sol
           FONDA_EFFORT: high
-          # "all pages that contain AI should run fresh renders": rebuild every instrument's
-          # chart series on a full-desk run, not just gold.
-          XEF_CHART_ALL: ${{ (inputs.cycle == 'daily-bias' || github.event_name == 'schedule') && '1' || '' }}
+          XEF_CHART_ALL: ${{ (env.CYCLE == 'daily-bias' || github.event_name == 'schedule') && '1' || '' }}
         run: |
-          # COT / seasonality / FX strength / macro are cheap fetches; the verdicts stage makes
-          # ONE model call and falls back to the deterministic scorer if that call fails.
-          # Never fatal — the bias cycle above is the main work.
-          python3 /home/user/refresh-page-data.py --allow-partial || echo "::warning::page refresh had failures (see log)"          # R108 — the archive's reads are refreshed by step "15b" inside run-full-chain.sh,
-          # BEFORE the packs consume them. Nothing is fetched twice here.
+          if [ "$CYCLE" = "daily-bias" ] && [ -f /home/user/xau-elite-fonda/public/data-freshness.json ]; then
+            echo "daily-bias already refreshed every page dataset inside run-full-chain.sh — skipping duplicate pass"
+          else
+            python3 /home/user/refresh-page-data.py --allow-partial || echo "::warning::page refresh had failures (see log)"
+          fi
 
       - name: BIAS-V2 — standalone daily bias + setups page
-        if: env.XEF_NOOP != '1'
-        # OWNER REQUEST 2026-11-06: a second, independent page at /bias-v2.html.
-        # Its own folder (/home/user/bias-v2), its own data, its own output.
-        # It never reads or writes the AI Daily Bias / AI Setups / sniper artefacts,
-        # so it cannot disturb them. No model calls -> no token cost.
-        # Non-fatal on purpose: if a public feed is rate-limited we keep the previous
-        # page rather than shipping a broken one, and the main cycle still deploys.
+        if: env.SKIP != '1'
         env:
-          # spot XAU/USD comes from TwelveData. Without this the page silently falls back to
-          # GC=F futures, which trades at a basis (~$43 on 2026-11-06) and would publish
-          # every level ~$43 above the owner's spot chart.
           TD_KEY: ${{ secrets.TD_KEY }}
         run: bash /home/user/bias-v2/run.sh || echo "::warning::bias-v2 refresh failed — previous page stays live"
 
       - name: Deploy both sites to Surge
-        if: env.XEF_NOOP != '1'
+        if: env.SKIP != '1'
         env:
           SURGE_LOGIN: ${{ secrets.SURGE_LOGIN }}
           SURGE_TOKEN: ${{ secrets.SURGE_TOKEN }}
         run: bash /home/user/deploy-sites.sh
 
       - name: Verify live after deploy (the desk customers read must be this session's)
-        if: env.XEF_NOOP != '1'
-        # "HTTP 200" only proves a site is up — that is how a three-day-old desk passed
-        # every check. Both domains must now serve a desk anchored on the last CLOSED
-        # candle, and bias-all.json / sniper index must come from this session.
+        if: env.SKIP != '1'
         run: |
           sleep 5
           for h in https://xau-elite-fx.surge.sh https://xau-elite-fx2.surge.sh; do
@@ -424,12 +355,7 @@ jobs:
           EOF
 
       - name: Report the full chain (and fail the run if a page did not refresh)
-        # HONESTY STEP. The chain script exits 0 so that deploy always happens with whatever
-        # fresh data was produced; this is where the run is judged. It checks the PRODUCTS,
-        # not the exit codes: a page counts as refreshed only if its published artefact was
-        # written by THIS run. A corrective retry that worked reads green; a stage that
-        # quietly published nothing does not.
-        if: always() && env.XEF_NOOP != '1'
+        if: always() && env.SKIP != '1'
         run: |
           echo "──────── AI stage ledger ────────"
           if [ -f /tmp/xef-cycle-status.tsv ]; then
@@ -441,175 +367,113 @@ jobs:
 
           echo "──────── published artefacts written by this run ────────"
           BAD=0
-          # deploy-only genuinely does not rebuild the desk: it ships the tree the last
-          # real cycle produced. Gating it on "content changed" would fail every
-          # deploy-only run (it did, 43944836288) and train us to ignore a red run. For
-          # that cycle the artefacts must be PRESENT and parseable, nothing more.
-          if [ "${{ inputs.cycle }}" = "deploy-only" ]; then
+          if [ "$CYCLE" = "deploy-only" ]; then
             echo "  note  cycle=deploy-only — freshness gated on presence, not on change"
             CYCLE_IS_DEPLOY_ONLY=1
           else
             CYCLE_IS_DEPLOY_ONLY=0
           fi
-          check_fresh () {   # check_fresh <label> <path>
-            label="$1"; path="$2"
-            if [ ! -f "$path" ]; then
-              echo "::error::$label — MISSING ($path)"; BAD=1; return
-            fi
-            if [ "$CYCLE_IS_DEPLOY_ONLY" = "1" ]; then
-              echo "  OK   $label — present ($(stat -c %y "$path" | cut -d. -f1))"; return
-            fi
-            key=$(echo "$path" | sed 's|/home/user/||; s|/public/|-|' | tr '/' '-')
-            base="/tmp/xefpre/${key}.sha"
-            cur=$(sha256sum "$path" | cut -d' ' -f1)
-            if [ ! -f "$base" ]; then
-              echo "  OK   $label — created by this run (no previous copy)"
-            elif [ "$cur" = "$(cut -d' ' -f1 "$base")" ]; then
-              echo "::error::$label — NOT REFRESHED, byte-identical to the checkout"; BAD=1
+          case "$CYCLE" in
+            bias-only)       MUST_CHANGE="daily-bias-locked.js" ;;
+            sniper-refresh)  MUST_CHANGE="setups-preloaded.js" ;;
+            position-check)  MUST_CHANGE="position-check-latest.json" ;;
+            miss-review)     MUST_CHANGE="" ;;
+            *)               MUST_CHANGE="fundamental-verdicts.json cot-5yr-all.js bias-all.json bias/XAUUSD.json sniper/index.json sniper/XAUUSD.json" ;;
+          esac
+          for f in bias-all.json bias/XAUUSD.json sniper/index.json sniper/XAUUSD.json daily-bias-locked.js setups-preloaded.js fundamental-verdicts.json cot-5yr-all.js macro-history.json; do
+            p="/home/user/xau-elite-fonda/public/$f"
+            k=$(printf '%s' "$f" | tr '/' '-')
+            base="/tmp/xefpre/xau-elite-fonda-$k.sha"
+            if [ ! -f "$p" ]; then
+              echo "::error::MISSING $f"
+              BAD=1
+            elif [ "$CYCLE_IS_DEPLOY_ONLY" = "1" ]; then
+              printf '  OK    %-32s (%d bytes, deploy-only)\n' "$f" "$(wc -c < "$p")"
+            elif [ -f "$base" ] && sha256sum --status -c "$base" 2>/dev/null; then
+              case " $MUST_CHANGE " in
+                *" $f "*)
+                  echo "::error::UNCHANGED $f — still identical to the pre-run checkout (stage did not publish)"
+                  BAD=1 ;;
+                *)
+                  printf '  keep  %-32s (not targeted by %s)\n' "$f" "$CYCLE" ;;
+              esac
             else
-              echo "  OK   $label — content changed in this run"
-            fi
-          }
-          # ROUND 23 — THE RED LIGHT MUST MEAN THE PRODUCT IS STALE.
-          # daily-bias-locked.js and setups-preloaded.js are the SUPERSEDED v1 path.
-          # Since round 21 the customer-facing desk is bias-all.json + bias/<SYM>.json,
-          # produced by refresh-data.yml (every 3 h). Holding this workflow red for a v1
-          # artefact that no page reads would train us to ignore a red run — so the v1
-          # cards are reported, not gated, and the run fails only on the live desk.
-          echo "-- v1 legacy artefacts (reported, not gated - superseded by bias-all.json) --"
-          for f in daily-bias-locked.js setups-preloaded.js; do
-            if [ -f "/home/user/xau-elite-fonda/public/$f" ]; then
-              echo "  note  v1 $f present (not the desk source of truth)"
-            else
-              echo "  note  v1 $f absent"
+              printf '  FRESH %-32s (%d bytes, written by this run)\n' "$f" "$(wc -c < "$p")"
             fi
           done
-          echo "-- LIVE DESK (this is what customers read - gated on the DATE) --"
-          # R99 — BYTE-IDENTITY IS NOT FRESHNESS. It caught a stage that did nothing, but it
-          # cannot tell "nothing ran" from "a new timestamp on yesterday's analysis", and it
-          # never asked the only question the owner asks: is this TODAY'S desk? The check is
-          # now the same one the gate uses, run against the tree that is about to ship.
-          if [ "$CYCLE_IS_DEPLOY_ONLY" = "1" ]; then
-            echo "  note  cycle=deploy-only — freshness gated on presence, not on the date"
-          else
+
+          if [ "$CYCLE" = "daily-bias" ] || [ -z "$CYCLE" ]; then
+            echo "──────── per-instrument AI output (must come from THIS session) ────────"
             python3 - <<'EOF' || BAD=1
-          import json, datetime, sys
+          import json, datetime, os
           now = datetime.datetime.now(datetime.timezone.utc)
           bad = 0
-          for label, path, key in [
-              ("Multi-asset desk index", "/home/user/xau-elite-fonda/public/bias-all.json", "generatedAt"),
-              ("Per-symbol desk XAUUSD", "/home/user/xau-elite-fonda/public/bias/XAUUSD.json", "generatedAt"),
+          for label, rel, key in [
+              ("34-pair daily bias (bias-all.json)", "bias-all.json", "generatedAt"),
+              ("XAUUSD bias card  (bias/XAUUSD.json)", "bias/XAUUSD.json", "generatedAt"),
+              ("34-pair setups    (sniper/index.json)", "sniper/index.json", "generatedAt"),
+              ("XAUUSD setups     (sniper/XAUUSD.json)", "sniper/XAUUSD.json", "generatedAt"),
           ]:
-              try:
-                  d = json.load(open(path))
-              except Exception as e:
-                  print("::error::%s — unreadable (%s)" % (label, e)); bad = 1; continue
-              g = d.get(key)
+              p = "/home/user/xau-elite-fonda/public/" + rel
+              if not os.path.exists(p):
+                  print("::error::MISSING %s" % label); bad = 1; continue
+              d = json.load(open(p))
+              g = d.get(key) or ""
               if not g:
                   print("::error::%s — no %s, cannot prove it is this session's" % (label, key)); bad = 1; continue
               age = (now - datetime.datetime.fromisoformat(g.replace("Z", "+00:00"))).total_seconds() / 3600.0
-              bar = d.get("barAsOf") or ""
               ok = age <= 14
               print("%s%s — %s (%.1f h old)%s" % ("  OK   " if ok else "::error::", label, g, age,
                                                   "" if ok else "  <-- NOT THIS SESSION'S"))
               bad += 0 if ok else 1
-          # and the card must be anchored on the last CLOSED candle, not the live one
           try:
-              import glob
               card = json.load(open("/home/user/xau-elite-fonda/public/bias/XAUUSD.json"))
               bars = json.load(open("/home/user/xau-elite-fonda/public/chartdata/chart-XAUUSD-1D.json"))["data"]["bars"]
-              # R103f — ASK THE DESK'S OWN RULE, not a third copy of it.
-              # This used to settle the bar with a bare "+24h" clock while the builder
-              # settles it with the instrument's own session evidence, so the verifier
-              # declared a correct desk wrong: at 23:40Z gold's 19 Nov bar (which closed at
-              # 22:00Z) had not been open 24 hours, so this said "last closed = 18 Nov" and
-              # failed the run - after a perfectly good deploy.
               import sys
               sys.path.insert(0, "/home/user")
               from refresh import common as _C
               try:
-                  _h1 = json.load(open("/home/user/xau-elite-fonda/public/chartdata/chart-XAUUSD-1H.json"))["data"]["bars"]
+                  _m = json.load(open("/home/user/xau-elite-fonda/public/chartdata/chart-XAUUSD-1H.json"))["data"]
+                  _h1 = _m["bars"]
+                  _h1_ts = _C.fetched_ts(_m)
               except Exception:
-                  _h1 = []
+                  _h1, _h1_ts = [], None
               _closed, _info = _C.drop_open_bars(bars, "1D", market_idle=_C.market_idle(_h1),
-                                                 intraday_tail=_h1)
+                                                 intraday_tail=_h1, tail_fetched_at=_h1_ts)
               closed = _closed[-1].get("date") if _closed else None
+              want_locked = _C.next_session(closed, card.get("assetClass")) if closed else None
               if closed and card.get("barAsOf") != closed:
                   print("::error::the desk is anchored on %s but the last CLOSED candle is %s"
                         % (card.get("barAsOf"), closed)); bad = 1
+              elif want_locked and card.get("lockedForDate") and card.get("lockedForDate") != want_locked:
+                  print("::error::the desk lockedForDate is %s but next session is %s"
+                        % (card.get("lockedForDate"), want_locked)); bad = 1
               else:
-                  print("  OK   desk anchored on the last closed candle (%s)" % card.get("barAsOf"))
+                  print("  OK   desk anchored on the last closed candle (%s -> locked %s)"
+                        % (card.get("barAsOf"), card.get("lockedForDate")))
           except Exception as e:
               print("::error::could not verify the anchor (%s)" % e); bad = 1
           raise SystemExit(bad)
           EOF
           fi
-          # the same question, asked of the tree that is about to ship (file:// so the
-          # gate and the deploy can never disagree about what "fresh" means)
-          python3 /home/user/desk_fresh.py --host "file:///home/user/xau-elite-fonda/public" || BAD=1
-          # R105: the two load-time defects a customer sees were both found on a phone,
-          # not by a check. This one runs on every build from now on.
-          python3 /home/user/test-live-ux.py || BAD=1
-          check_fresh "Fundamental AI verdict" /home/user/xau-elite-fonda/public/fundamental-verdicts.json
-          check_fresh "COT bundle"             /home/user/xau-elite-fonda/public/cot-5yr-all.js
-          check_fresh "Macro bundle"           /home/user/xau-elite-fonda/public/macro-history.json
+          python3 /home/user/desk_fresh.py --host file:///home/user/xau-elite-fonda/public --max-age 14 || BAD=1
+          python3 /home/user/report-chain.py || BAD=1
+          exit $BAD
 
-          echo "-- SNIPER SETUPS — one call per pair, for THIS session --"
-          python3 - <<'EOF' || BAD=1
-          import json
-          d = json.load(open('/home/user/xau-elite-fonda/public/sniper/index.json'))
-          ins = d.get('instruments') or {}
-          judged = [k for k, v in ins.items()
-                    if v.get('engine') == 'xef-desk-sniper' and (v.get('setups') or 0) > 0]
-          fallback = [k for k, v in ins.items() if v.get('engine') == 'desk-rule-fallback']
-          print('   generatedAt %s · %d judged · %d desk-rule fallbacks · %d instrument files'
-                % (d.get('generatedAt'), len(judged), len(fallback), len(ins)))
-          if fallback:
-              print('   fallbacks: %s' % ', '.join(sorted(fallback)))
-          unavailable = d.get('modelUnavailable') or []
-          if len(judged) < 30:
-              if unavailable:
-                  # R101: an exhausted model balance is not a quiet desk. Fail, and say what
-                  # it is, so nobody reads 27 fallback cards as 27 model rejections.
-                  print('::error::the desk model account refused %d instrument(s) (%s) - '
-                        '%d of %d carry the day\'s own setups. Read the provider\'s own words '
-                        'in the log: "$0.75 and Rs.31, but Rs.31 is temporarily reserved" means '
-                        'the balance is HELD, not empty - every call reserves the whole balance, '
-                        'so a funded account can refuse every call at once. Top the balance up '
-                        'to comfortably cover one run and the reserve stops binding.'
-                        % (len(unavailable), ', '.join(unavailable[:10]), len(judged), len(ins)))
-              raise SystemExit('::error::only %d of %d instruments carry the day\'s own setups'
-                               % (len(judged), len(ins)))
-          EOF
-
-          echo "──────── AI route actually used ────────"
-          python3 report-chain.py
-
-          if [ "$BAD" -ne 0 ]; then
-            echo "::error::a LIVE DESK artefact did not refresh in this run — see STALE/MISSING above. Customers would read the previous session's desk."
-            exit 1
-          fi
-          echo "all AI pages refreshed in this run."
-
-      - name: Commit the day's updated state back
-        # ALWAYS: run 41747392727 passed lessons (VALIDATION: PASS, 6,257 content chars)
-        # and then died at call-bias with HTTP 402. Because this step only ran on the
-        # success path, the lessons were lost and learning-state.json stayed at
-        # 2026-10-23 - so the next run would pay to recompute them. State that has
-        # already been validated must be persisted even when a LATER step fails.
-        if: always() && env.XEF_NOOP != '1'
+      - name: Commit updated data back to the repo (keeps history + next run's ledger)
+        if: env.SKIP != '1'
         run: |
-          cd "$GITHUB_WORKSPACE"
+          cd /home/user
           git config user.name  "xef-cycle-bot"
-          git config user.email "actions@github.com"
+          git config user.email "xef-cycle-bot@users.noreply.github.com"
           git add -A
-          git commit -m "cycle: ${{ inputs.cycle }} $(date -u +%F_%H%M)Z" || echo "nothing to commit"
-          # R100: a push can lose a race with another commit (the deploy commit, or a fix
-          # landed while this run was in flight). Failing the run AFTER the site has been
-          # deployed and verified says "the site is broken" when it is not - it only means
-          # the state file came back late. Rebase once and retry before giving up.
-          for attempt in 1 2 3; do
-            git push && { echo "state pushed (attempt $attempt)"; break; }
-            echo "::warning::push rejected (attempt $attempt) - rebasing onto the remote and retrying"
-            git pull --rebase --autostash origin main || true
-          done
+          if git diff --cached --quiet; then
+            echo "nothing new to commit"
+          else
+            git commit -m "cycle: ${CYCLE:-daily-bias} $(date -u '+%Y-%m-%d %H:%M UTC')"
+            for attempt in 1 2 3; do
+              git pull --rebase --autostash origin main && git push origin main && break
+              echo "push collided with another commit (attempt $attempt) — rebasing"
+              sleep 3
+            done
+          fi

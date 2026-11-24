@@ -1,325 +1,254 @@
-name: Page Data Refresh (background, no AI)
+name: XAU ELITE FX — Refresh All Page Data (COT · Seasonality · Verdicts · Curves · 8-TF Charts)
 
-# WHY THIS WORKFLOW EXISTS
-# -----------------------
-# Five pages (Seasonality, COT, FX Strength, Macro & Rates, Fundamental) were rendering
-# frozen in-repo constants: seasonality anchored 2026-10-16, COT 2026-10-13, verdicts
-# 2026-10-15, G8 strength hand-typed. Nothing regenerated those files.
-# This job re-fetches every one of them from its official publisher, verifies it, deploys
-# both sites and proves the live bytes carry the new vintage. It costs $0 and makes no
-# model calls, so it can run often.
-
-# ── COST GUARD (private repo!) ───────────────────────────────────────────────
-# This repo is PRIVATE, so Actions minutes are metered: GitHub Free gives 2,000
-# minutes/month. One refresh run bills 2 minutes (1.8 min job, rounded up), so:
-#     every 30 min  = 48 runs/day = ~2,880 min/month  → blows the quota, and when
-#                    the quota is gone EVERY workflow stops (including the AI cycle)
-#     every 2 hours = 12 runs/day = ~1,800 min/month  → leaves ~200 min for AI cycles
-#     every 3 hours =  8 runs/day = ~1,200 min/month  → leaves ~800 min for AI cycles
-# A refresh run now bills ~5 min (the charts stage pulls 272 series from TradingView's
-# datafeed — 2 of those minutes — then deploys both sites). So the cadence is 3-hourly:
-# 8 runs/day ~ 1,200 min/month, which leaves ~800 min for the paid AI cycle.
-# If the repo is ever made public, Actions minutes become unlimited and the cron can go
-# to every 15 minutes for free.
 on:
   schedule:
-    - cron: "7 */3 * * *"           # every 3 h, UTC minute 7 (Casablanca = UTC+1). GitHub may delay under load.
+    - cron: '7 */1 * * *'
   workflow_dispatch:
     inputs:
-      only:
-        description: "Optional: subset of stages (cot,seasonality,strength,macro,verdicts)"
+      allow_partial:
+        description: 'Deploy whatever succeeded even if one upstream is down'
         required: false
-        default: ""
-      deploy:
-        description: "Deploy to Surge after the refresh (true/false)"
+        default: 'true'
+        type: choice
+        options: ['false', 'true']
+      rebuild_bias:
+        description: 'Force a full 34-pair daily-bias rebuild regardless of barAsOf'
         required: false
-        default: "true"
-
-concurrency:
-  # R39: the SAME lock as daily-cycles.yml. Both workflows write bias-all.json,
-  # bias/<SYM>.json and sniper/<SYM>.json; when they overlap, one run's half-written tree
-  # can reach production (that is the class of bug that once published a one-symbol index).
-  # They now queue instead of racing.
-  group: xef-desk
-  cancel-in-progress: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 permissions:
   contents: write
+  actions: write
+
+concurrency:
+  group: xef-deploy
+  cancel-in-progress: false
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
-      - name: Checkout repo
+      - name: Checkout private repo
         uses: actions/checkout@v4
         with:
           repository: callmeforex/xau-elite-fx
           token: ${{ secrets.GH_PAT }}
+          fetch-depth: 1
 
-      - name: Map /home/user to the repo (the scripts resolve their paths from /home/user)
-        run: |
-          sudo ln -s "$GITHUB_WORKSPACE" /home/user
-          python3 --version && node --version
-          # the charts stage talks to TradingView's datafeed over a websocket
-          python3 -m pip install --quiet --disable-pip-version-check websocket-client
+      - name: Map /home/user to the repo
+        run: sudo ln -sfn "$GITHUB_WORKSPACE" /home/user
 
-      # ── COST GUARD: never pay twice for the same vintage ────────────────────
-      # GitHub can fire a delayed schedule run minutes after an on-time one, and an
-      # external pinger may add more triggers. Both would bill a full job for data
-      # that is already live. So a scheduled run does nothing unless the LIVE bundle
-      # is older than 150 minutes (the 3-hour cron lands at ~180 min).
-      - name: Cost guard — skip when the live data is already fresh
-        id: costguard
+      - name: Install Python dependencies
         run: |
-          AGE=$(python3 - <<'EOF'
-          import json, datetime, urllib.request
+          python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+          python3 -c "import requests, bs4, websocket; print('deps ok — websocket', websocket.__version__)"
+
+      - name: Cost guard — skip if live data is already fresh AND desk is not behind
+        id: guard
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "manual dispatch — running regardless of age"
+            echo "SKIP_REFRESH=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          set +e
+          DF_OUT=$(python3 /home/user/desk_fresh.py)
+          DF_RC=$?
+          set -e
+          echo "desk_fresh: $DF_OUT (exit $DF_RC)"
+          if [ "$DF_RC" -ne 0 ]; then
+            echo "::notice::desk is BEHIND ($DF_OUT) — bypassing cost guard to refresh immediately"
+            echo "SKIP_REFRESH=0" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          AGE=$(python3 - <<'PY'
+          import datetime as dt, json, urllib.request
           try:
-              m = json.load(urllib.request.urlopen(
-                  "https://xau-elite-fx.surge.sh/data-freshness.json", timeout=20))
-              t = datetime.datetime.strptime(m["generatedAt"], "%Y-%m-%dT%H:%M:%SZ")
-              age = (datetime.datetime.utcnow() - t).total_seconds() / 60
-              print(int(age))
-          except Exception as e:
-              print(-1)          # unknown -> run (never skip on a read failure)
-          EOF
+              url = f"https://xau-elite-fx.surge.sh/data-freshness.json?cb={int(dt.datetime.now().timestamp())}"
+              raw = urllib.request.urlopen(url, timeout=15).read()
+              g = json.loads(raw).get("generatedAt", "")
+              t = dt.datetime.fromisoformat(g.replace("Z", "+00:00"))
+              print(int((dt.datetime.now(dt.timezone.utc) - t).total_seconds() // 60))
+          except Exception:
+              print(9999)
+          PY
           )
-          echo "live bundle age: ${AGE} min (event: ${{ github.event_name }})"
-          if [ "$AGE" -ge 0 ] && [ "$AGE" -lt 150 ] && [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Skipped::live bundle is ${AGE} min old — nothing stale to refresh"
+          echo "live data-freshness.json age: ${AGE} min"
+          if [ "$AGE" -lt 50 ]; then
+            echo "::notice::live data is ${AGE} min old (< 50 min) and desk is FRESH — skipping this scheduled run"
+            echo "SKIP_REFRESH=1" >> "$GITHUB_ENV"
           else
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "SKIP_REFRESH=0" >> "$GITHUB_ENV"
           fi
 
-      - name: Restore the live LEDGER only (keep the repo's rule set)
+      - name: Unpack archives (first run only — later runs use the committed trees)
+        if: env.SKIP_REFRESH != '1'
         run: |
-          # v1 ROLLBACK (2026-11-04): copying the whole live file reverted the 12-rule protocol on
-          # every 3-hourly refresh. Ledger/forecasts/candles come from live (fresh); rules stay v1.
-          python3 /home/user/restore-ledger.py
+          cd /home/user
+          for z in sites.zip chartdata-master.zip; do
+            if [ -f "$z" ]; then unzip -q "$z" && rm -f "$z" && echo "unpacked $z"; fi
+          done
+          ls -la /home/user/xau-elite-fonda/public | head -12
 
-      # --allow-partial: one broken feed must never freeze the other five datasets again.
-      # A stage that cannot be fetched is written into data-freshness.json as FAILED (its pages
-      # badge STALE); the healthy pages still deploy. A stage whose publisher simply has not
-      # released a newer vintage is LATE, not FAILED, and never blocks anything.
       - name: Refresh every page dataset from its real source
-        if: steps.costguard.outputs.proceed == 'true'
-        run: python3 refresh-page-data.py --allow-partial ${{ inputs.only && format('--only {0}', inputs.only) || '' }}
-
-      # The charts feed is collected by live-charts.yml, but the 3-hourly run refreshes it too:
-      # if the light job ever stalls, this keeps /feed/ fresh instead of letting it age out.
-      - name: Collect the TradingView chart snapshot (feed/)
-        if: steps.costguard.outputs.proceed == 'true'
-        run: python3 -m refresh.tv_snapshot XAUUSD
-
-      # The Level & Risk Desk publishes measured probabilities, so its live half (spot, ATR,
-      # percentile, structural levels, executed volume) must never be older than one refresh
-      # cycle. This rebuilds ONLY level-desk-data.js; the daily-bias / setups / sniper pages and
-      # their data files are not touched by this step.
-      - name: Rebuild the Level & Risk Desk live layer
-        if: steps.costguard.outputs.proceed == 'true'
-        run: python3 -m refresh.desk
-
-      # ── ROUND-21: EVERY pair, not just gold ─────────────────────────────────
-      # Owner order: "do same as all things you did for gold to be operational for all
-      # pairs ... the only difference is the AI bias: keep gpt-6.1-sol for gold, use a
-      # cheap reasoning model for the rest." So two things happen here, in order:
-      #
-      #   1. symbol-health.json — a per-instrument freshness verdict for all 34 pairs and
-      #      8 timeframes. This is what the AI page's DESK COVERAGE panel renders, and a
-      #      stale pair shows red instead of silently passing as current.
-      #   2. bias-all.json + bias/<SYM>.json — one evidence pack, one model call and one
-      #      number-grounding gate per instrument. Gold stays on gpt-6.1-sol; the other 33
-      #      use glm-5.3-flash, chosen by measurement in MODEL-CHOICE.md.
-      #
-      # Cost: ~33 x 600 output tokens per run, about a fifth of one gold call. ONE CALL PER
-      # INSTRUMENT, SERIALISED (Ashna throttles on concurrency, not quota).
-      - name: Pairs — freshness audit for all 34 instruments
-        if: steps.costguard.outputs.proceed == 'true'
-        run: python3 -m refresh.health
-
-      # R38: every instrument was silently publishing the deterministic baseline.
-      # This probe says why (key format, /models, one tiny call per routed model) in
-      # the private log, and never blocks the run.
-      - name: AI preflight — does the routed model actually answer?
-        if: steps.costguard.outputs.proceed == 'true'
-        continue-on-error: true
+        if: env.SKIP_REFRESH != '1'
         env:
           ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
-          GOLD_MODEL: gpt-6.1-sol
-          PAIR_MODEL: glm-5.3-flash
-        run: python3 -m refresh.ai_preflight || true
-
-      - name: Pairs — daily bias for all 34 instruments
-        if: steps.costguard.outputs.proceed == 'true'
-        env:
-          ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
-          GOLD_MODEL: gpt-6.1-sol
-          PAIR_MODEL: glm-5.3-flash
-          BIAS_WORKERS: '3'
-        run: |
-          # R39 — THE BIAS MOVES AT THE CLOSE, AND NOWHERE ELSE.
-          # Owner, 2026-11-16: the daily candle closes at 22:00 Casablanca, and the D+1 bias
-          # is published on that close. This workflow runs every 3 h; rebuilding all 34
-          # biases here billed 34 model calls to re-answer a question that cannot change
-          # until the candle settles (and, before the open-bar guard, answered it from a
-          # candle that was still trading, publishing its running price as the close).
-          # So: rebuild only the instruments whose card predates the last daily close.
-          STALE=$(python3 -m refresh.bar_close --stale-symbols | tail -1)
-          if [ -z "$STALE" ]; then
-            echo "::notice::all 34 bias cards were built after the last daily close — no model call needed"
-          else
-            echo "rebuilding: $STALE"
-            python3 -m refresh.bias_all --symbols "$STALE" || {
-              echo "::warning::bias_all had failures — every symbol still publishes its deterministic baseline"
-            }
-          fi
-          python3 - <<'EOF'
-          import json
-          # The published index is white-labelled (R23): counts = total / published / failed.
-          # This check used to read counts['modelJudged'], a key that is deliberately stripped
-          # from the public file, so it raised KeyError AFTER a successful bias run and skipped
-          # Deploy. Gate on what the page actually consumes.
-          d = json.load(open('/home/user/xau-elite-fonda/public/bias-all.json'))
-          c = d['counts']
-          print(f"bias coverage: {c['published']}/{c['total']} published, {c['failed']} failed")
-          if c['failed'] or c['published'] < c['total']:
-              raise SystemExit('::error::some instruments produced no bias at all')
-          EOF
-
-      # R38k: the index that ships is the one the AI page reads gold out of. On 2026-11-16
-      # a run reported "34/34 published" and production ended up with a ONE-symbol index,
-      # so gold fell back to a frozen object dated 2026-10-14 and the 34-row desk-coverage
-      # table went blank. Assert the artefact itself, before anything downstream uses it.
-      - name: Desk index — assert all 34 instruments survived the bias run
-        if: steps.costguard.outputs.proceed == 'true'
-        run: |
-          python3 - <<'EOF'
-          import json, sys
-          p = '/home/user/xau-elite-fonda/public/bias-all.json'
-          d = json.load(open(p))
-          syms = d.get('symbols') or {}
-          g = syms.get('XAUUSD')
-          print('index: %d symbols · counts %s · gold %s' % (len(syms), d.get('counts'), (g or {}).get('generatedAt')))
-          if len(syms) < 34 or not g:
-              raise SystemExit('::error::bias-all.json lost instruments (%d) or gold — refusing to continue' % len(syms))
-          if not g.get('elementByElementAudit') and not g.get('inputsTotal'):
-              print('::warning::gold card carries no element-by-element audit yet (audit14 runs later)')
-          EOF
-
-      # R33c: the four inputs the audit used to publish as 0.00 now have real feeds:
-      #   5  open books (OKX XAUT spot, Kraken PAXG) + volume confirmation
-      #   7  Fed target range / EFFR / bill curve / FOMC calendar (FRED + federalreserve.gov)
-      #   10 gold headlines from the last 24 h (Google News RSS, three queries)
-      #   11 CFTC swap-dealer (bank) book for COMEX gold
-      # Every source is attempted every run and its failure is published, never back-filled.
-      # R108 — the archive's four reads. Fetched in this workflow (not the paid one) on
-      # purpose: it is data only, it costs nothing in model credits, and running here means the
-      # readings are already on disk when the next AI cycle builds its packs. A failure is a
-      # warning, never fatal: the desk must run exactly as it does today without it.
-      - name: Inputs — implied vol, CFTC positioning, curve, catalysts (no AI)
-        if: steps.costguard.outputs.proceed == 'true'
-        continue-on-error: true
-        env:
-          LSE_API_KEY: ${{ secrets.LSE_API_KEY || secrets.LSE }}
-        run: python3 -m refresh.lsefeed
-
-      - name: Gold — fetch inputs 5 / 7 / 10 / 11 (books, policy, wire, bank book)
-        if: steps.costguard.outputs.proceed == 'true'
-        run: python3 -m refresh.extras
-
-      # R33: the 14-input audit. bias_all.py publishes the verdict + the evidence pack; this
-      # step turns that pack plus the extra feeds into the 14-row table the AI Daily Bias page
-      # renders (input, the number read, the score, the weighted points, the tier).
-      # Deterministic, no model call, re-derived every run so the table can never drift from
-      # the card it explains.
-      - name: Gold — the 14-input audit behind the daily bias
-        if: steps.costguard.outputs.proceed == 'true'
-        run: python3 -m refresh.audit14
-
-      # R36: every instrument gets a real heatmap. Hyperliquid's HIP-3 dexes publish public
-      # L2 books for metals, energy, FX, indices and single names; Kraken publishes spot FX
-      # depth; the five markets with no public book get a labelled volume/TPO profile.
-      - name: All 34 — publish heatmaps (public books, triangulated crosses, profiles)
-        if: steps.costguard.outputs.proceed == 'true'
-        run: python3 -m refresh.books --publish
-
-      # R39 — THE DAY'S SNIPER SETUPS ARE A CALL PER PAIR, NOT A FORMULA.
-      # Owner order: "for sniper setups, I need a call for each pair for the sniper setups of
-      # the day. Only gold that run using gpt-6.1-sol. Do not use the same setup rendered by
-      # the AI daily bias run." So the setups come from refresh/sniper_ai.py, one model call
-      # per instrument (gold gpt-6.1-sol/high, the other 33 glm-5.3-flash), and the bias
-      # pack's entry/stop/targets are withheld from the prompt so the answer cannot be the
-      # daily-bias trade restated.
-      #
-      # This workflow runs every three hours; the daily cycle at 22:00 Casablanca makes the
-      # calls. The module is IDEMPOTENT here — a pair whose published setups already belong to
-      # the current session is left untouched, so the 3-hourly pass normally makes ZERO calls
-      # and can never overwrite the day's judgement with the desk-rule fallback. A pair whose
-      # session has rolled over, or that never published, gets its own call here, so the page
-      # is never blank between daily runs.
-      - name: All 34 — sniper setups for the day (one call per pair; stale-only here)
-        if: steps.costguard.outputs.proceed == 'true'
-        env:
           CI_KEY: ${{ secrets.CI_KEY }}
+          ASHNA_MODEL: gpt-6.1-sol
+          FONDA_EFFORT: high
+          XEF_CHART_ALL: '1'
+          LSE_API_KEY: ${{ secrets.LSE_API_KEY || secrets.LSE }}
+          OM_MCP_TOKEN: ${{ secrets.OM_MCP_TOKEN }}
+          OM_MCP_TOKEN_2: ${{ secrets.OM_MCP_TOKEN_2 }}
+        run: |
+          cd /home/user
+          FLAGS="--allow-partial"
+          if [ "${{ inputs.allow_partial }}" = "false" ]; then FLAGS=""; fi
+          python3 refresh-page-data.py $FLAGS
+
+      - name: Rebuild macro history from freshly updated terminal-data.js
+        if: env.SKIP_REFRESH != '1'
+        run: |
+          cd /home/user
+          node build-macro-history.js || echo "::warning::build-macro-history failed — keeping existing macro-history.json"
+
+      - name: Which instruments' daily bias is behind their own last closed candle?
+        if: env.SKIP_REFRESH != '1'
+        id: bias_gate
+        run: |
+          cd /home/user
+          if [ "${{ inputs.rebuild_bias }}" = "true" ]; then
+            echo "::notice::rebuild_bias=true — rebuilding all 34 daily-bias cards"
+            echo "STALE_SYMS=ALL" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          SYMS=$(python3 -m refresh.bar_close --stale-symbols | tail -1)
+          echo "STALE_SYMS=$SYMS" >> "$GITHUB_ENV"
+          if [ -z "$SYMS" ]; then
+            echo "::notice::all 34 daily-bias cards are already anchored on their own last closed candle"
+          else
+            echo "::notice::rebuilding daily bias for stale instruments: $SYMS"
+          fi
+
+      - name: AI preflight — model endpoint + credit check
+        if: env.SKIP_REFRESH != '1' && env.STALE_SYMS != ''
+        id: ai_ok
+        continue-on-error: true
+        env:
           ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
+          CI_KEY: ${{ secrets.CI_KEY }}
+        run: |
+          cd /home/user
+          if python3 -m refresh.ai_preflight --require-credit; then
+            echo "AI_READY=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::AI gateway preflight failed — keeping the existing daily-bias cards and still deploying the fresh non-AI data"
+            echo "AI_READY=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Pairs — daily bias for all 34 instruments (per-symbol evidence + AI)
+        if: env.SKIP_REFRESH != '1' && env.STALE_SYMS != '' && env.AI_READY == '1'
+        timeout-minutes: 25
+        continue-on-error: true
+        env:
+          ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
+          CI_KEY: ${{ secrets.CI_KEY }}
           GOLD_MODEL: ampersand-v0.1
           PAIR_MODEL: glm-5.3-flash
           GOLD_EFFORT: high
           PAIR_EFFORT: medium
           BIAS_WORKERS: '3'
-        run: python3 -m refresh.sniper_ai || echo "::warning::sniper setups partially refreshed — the previous payloads stay live"
-
-      # R43 — risk management on every sniper card. The section was blank on all 34 pairs
-      # because the publisher wrote riskPerTrade/atr while the page read maxDailyRisk/
-      # positionSizing/newsRiskNotes/doNotTradeZones. Both sides now speak the same keys;
-      # this pass backfills any card still carrying the old shape.
-      - name: All 34 — risk management block on every sniper card
-        run: python3 -m refresh.risk --backfill || echo "::warning::risk blocks not backfilled — the publisher still writes them at the next sniper run"
-
-      # R36: and every instrument gets its own element-by-element audit, built from its own
-      # driver spec (refresh/drivers.py) rather than gold's rows. A driver with no keyless
-      # feed is published unscored with the reason and its weight redistributed.
-      # R39 — THE TRACK RECORD. Records the call each instrument published this session and
-      # grades every call whose session has since closed, then publishes
-      # learning-ledger.json, which is the only source the AI Learning page renders.
-      - name: All 34 — track record (record the call, grade the closed sessions)
-        if: steps.costguard.outputs.proceed == 'true'
-        run: python3 -m refresh.ledger || echo "::warning::ledger not refreshed — the page keeps the previous record"
-
-      - name: All 34 — element-by-element audit from each instrument's own driver spec
-        if: steps.costguard.outputs.proceed == 'true'
-        run: python3 -m refresh.audit_all
-
-      - name: Show what was rebuilt
-        if: steps.costguard.outputs.proceed == 'true'
         run: |
-          cat /home/user/xau-elite-fonda/public/data-freshness.json | python3 -m json.tool | head -60
+          cd /home/user
+          if [ "$STALE_SYMS" = "ALL" ]; then
+            python3 -m refresh.bias_all
+          else
+            python3 -m refresh.bias_all --symbols "$STALE_SYMS"
+          fi
 
-      - name: Deploy both sites
-        if: steps.costguard.outputs.proceed == 'true' && (github.event_name == 'schedule' || inputs.deploy != 'false')
+      - name: Deploy both sites to Surge
+        if: env.SKIP_REFRESH != '1'
         env:
           SURGE_LOGIN: ${{ secrets.SURGE_LOGIN }}
           SURGE_TOKEN: ${{ secrets.SURGE_TOKEN }}
         run: bash /home/user/deploy-sites.sh
 
-      - name: Verify the LIVE sites carry this run's data
-        if: steps.costguard.outputs.proceed == 'true' && (github.event_name == 'schedule' || inputs.deploy != 'false')
+      - name: Verify live sites are serving this run's data
+        if: env.SKIP_REFRESH != '1'
         run: |
-          sleep 8
+          sleep 6
           python3 /home/user/verify-page-data.py
 
       - name: Snapshot the refreshed data into the repo
-        if: steps.costguard.outputs.proceed == 'true'
+        if: env.SKIP_REFRESH != '1'
         run: |
-          cd "$GITHUB_WORKSPACE"
+          cd /home/user
           git config user.name  "xef-data-bot"
-          git config user.email "actions@github.com"
-          # the manifest is the audit trail; the data files themselves are rebuilt every run,
-          # so they are only committed when the daily cycle snapshots the tree
-          git add -A xau-elite-fonda/public/data-freshness.json xau-elite-fonda2/public/data-freshness.json \
-            xau-elite-fonda/public/macro-history.json xau-elite-fonda2/public/macro-history.json \
-            xau-elite-fonda/public/terminal-data.js xau-elite-fonda2/public/terminal-data.js \
-            xau-elite-fonda/public/fundamental-verdicts.json xau-elite-fonda2/public/fundamental-verdicts.json
-          git commit -m "data: page refresh $(date -u +%F_%H%M)Z" || echo "nothing to commit"
-          git push || echo "push skipped"
+          git config user.email "xef-data-bot@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "nothing changed"
+          else
+            git commit -m "data: refresh $(date -u '+%Y-%m-%d %H:%M UTC')"
+            for attempt in 1 2 3; do
+              git pull --rebase --autostash origin main && git push origin main && break
+              echo "push collided with another commit (attempt $attempt) — rebasing"
+              sleep 3
+            done
+          fi
+
+      - name: Auto-dispatch full Daily Cycle if desk setups/locked bias still behind
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_TOKEN_FALLBACK: ${{ github.token }}
+        run: |
+          if [ "$(TZ=Africa/Casablanca date '+%u')" = "6" ]; then
+            echo "Saturday in Casablanca — skipping daily-cycles auto-dispatch"
+            exit 0
+          fi
+          set +e
+          OUT=$(python3 /home/user/desk_fresh.py)
+          RC=$?
+          set -e
+          echo "post-refresh desk_fresh: $OUT (exit $RC)"
+          if [ "$RC" -eq 0 ]; then
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, os, urllib.request
+          tok = os.environ.get("GH_PAT") or os.environ.get("GH_TOKEN_FALLBACK") or ""
+          if not tok:
+              print("no token for workflow dispatch")
+              raise SystemExit(0)
+          headers = {
+              "Authorization": f"Bearer {tok}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "xef-auto-dispatcher",
+          }
+          runs_url = "https://api.github.com/repos/callmeforex/xef-runner/actions/workflows/daily-cycles.yml/runs?per_page=5"
+          try:
+              req = urllib.request.Request(runs_url, headers=headers)
+              runs = json.loads(urllib.request.urlopen(req, timeout=15).read()).get("workflow_runs", [])
+              active = [r for r in runs if r.get("status") in ("in_progress", "queued", "waiting", "requested", "pending")]
+              if active:
+                  print(f"daily-cycles.yml already active/queued (run {active[0].get('id')} status={active[0].get('status')}) — not dispatching duplicate")
+                  raise SystemExit(0)
+          except SystemExit:
+              raise
+          except Exception as e:
+              print(f"warning: could not check active runs ({e})")
+          disp_url = "https://api.github.com/repos/callmeforex/xef-runner/actions/workflows/daily-cycles.yml/dispatches"
+          body = json.dumps({"ref": "main", "inputs": {"cycle": "daily-bias", "rebuild": "if-behind"}}).encode()
+          try:
+              req = urllib.request.Request(disp_url, data=body, headers={**headers, "Content-Type": "application/json"}, method="POST")
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  print(f"dispatched daily-cycles.yml on callmeforex/xef-runner (HTTP {r.status})")
+          except Exception as e:
+              print(f"warning: could not dispatch daily-cycles.yml ({e})")
+          PY

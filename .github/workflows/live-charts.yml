@@ -1,138 +1,145 @@
-name: Live Charts (gold, fast)
+name: XAU ELITE FX — Live Gold Bars (every 20m, TradingView, $0 AI)
 
-# WHY THIS WORKFLOW EXISTS
-# ------------------------
-# The charts page could only grow bars while a tab was open, and the packaged files were only
-# rebuilt by the 3-hourly refresh — so a reopened tab showed stale bars and any missed minute
-# stayed missing (the user's two complaints). The browser cannot fix that itself: TradingView's
-# datafeed sockets refuse this origin (audit/probe_widgetsocket.js -> opened:false), so the page
-# can never ask the venue for the minutes it missed.
-#
-# A runner can. This job speaks TradingView's anonymous chart datafeed for the exact symbol the
-# chart is labelled with (OANDA:XAUUSD), publishes `public/feed/xauusd.json` + `feed/asof.json`,
-# and deploys. The page polls `asof.json` every 30 s and splices new bars into the open charts, so
-# a hole closes without a reload.
-#
-# COST (private repo, 2,000 Actions minutes/month)
-# ------------------------------------------------
-# One run here is ~15 s of work + the deploy, i.e. 1 billed minute. The cron below therefore only
-# fires while the gold market can actually produce new bars (Sun 21:00 UTC -> Fri 21:00 UTC), and
-# is denser during the London/NY overlap:
-#     */20  12-16 * * 1-5   15 runs/day   (13:00-17:59 UTC, the liquid hours)
-#     */30  0-11,17-23 * * 1-5   38 runs/day
-#     */30  21-23 * * 0      6 runs/week  (Sunday reopen)
-#   ≈ 38 runs/day ≈ 1,150 min/month, and ZERO on the weekend when there is nothing to collect.
-# The 3-hourly full refresh (480 min/month) keeps its own cadence and its own cost guard.
+# Keeps XAUUSD's 8 timeframes (1m/5m/15m/30m/1H/4H/1D/1W) within ~20 minutes of the live
+# TradingView OANDA:XAUUSD feed. One symbol = 8 websocket sessions (~5 s), no model calls,
+# no API keys, and on Saturday the market is closed so the job exits in 1 s.
+# Also checks desk_fresh.py after updating gold bars and auto-dispatches daily-cycles.yml
+# (workflow_dispatch starts in ~2s, bypassing GitHub schedule cron delays) whenever the
+# published desk is behind the last closed daily candle.
 
 on:
   schedule:
-    - cron: "*/20 12-16 * * 1-5"          # London/NY overlap: 20-minute freshness
-    - cron: "*/30 0-11,17-23 * * 1-5"     # rest of the trading week: 30-minute freshness
-    - cron: "*/30 21-23 * * 0"            # Sunday session open
+    - cron: '*/20 * * * 0-5'
   workflow_dispatch:
-
-concurrency:
-  # R103 — this used to be its own group ('live-charts'), so a 20-minute tick collection
-  # could run CONCURRENTLY with the nightly desk build and push its own tree over the bias
-  # and setups that had just been published. Both workflows deploy the same two Surge
-  # sites, so they must take the same lock: whichever starts second waits, and the tree it
-  # deploys is the newer one (the provenance guard in deploy-sites.sh refuses a downgrade
-  # even if this is ever loosened again).
-  group: xef-desk                        # same lock as the desk build — never two deploys at once
-  cancel-in-progress: false
 
 permissions:
   contents: write
+  actions: write
+
+concurrency:
+  group: xef-deploy
+  cancel-in-progress: false
 
 jobs:
-  snapshot:
+  gold-bars:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule != ''
     steps:
-      - name: Checkout repo
+      - name: Skip while the market is closed (Saturday in UTC)
+        id: gate
+        run: |
+          DOW=$(date -u '+%u')
+          HR=$(date -u '+%H')
+          if [ "$DOW" = "6" ] || { [ "$DOW" = "7" ] && [ "$HR" -lt 22 ]; } || { [ "$DOW" = "5" ] && [ "$HR" -ge 23 ]; }; then
+            if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+              echo "FX/metals weekend break (UTC dow=$DOW hr=$HR) — nothing new prints"
+              echo "skip=1" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout private repo
+        if: steps.gate.outputs.skip != '1'
         uses: actions/checkout@v4
         with:
           repository: callmeforex/xau-elite-fx
           token: ${{ secrets.GH_PAT }}
+          fetch-depth: 1
 
-      - name: Map /home/user to the repo + install the datafeed client
-        run: |
-          sudo ln -s "$GITHUB_WORKSPACE" /home/user
-          python3 --version
-          python3 -m pip install --quiet --disable-pip-version-check websocket-client
+      - name: Map /home/user
+        if: steps.gate.outputs.skip != '1'
+        run: sudo ln -sfn "$GITHUB_WORKSPACE" /home/user
 
-      # A delayed schedule firing on top of an on-time one would pay twice for the same bars.
-      # Scheduled runs therefore no-op unless the LIVE feed is at least 8 minutes old.
-      - name: Cost guard — skip when the live feed is already fresh
-        id: guard
-        run: |
-          AGE=$(python3 - <<'EOF'
-          import json, datetime, urllib.request
-          try:
-              j = json.load(urllib.request.urlopen("https://xau-elite-fx.surge.sh/feed/asof.json?t=1", timeout=20))
-              t = datetime.datetime.strptime(j["asOf"], "%Y-%m-%dT%H:%M:%SZ")
-              print(int((datetime.datetime.utcnow() - t).total_seconds() / 60))
-          except Exception:
-              print(-1)
-          EOF
-          )
-          echo "live feed age: ${AGE} min (event: ${{ github.event_name }})"
-          if [ "$AGE" -ge 0 ] && [ "$AGE" -lt 8 ] && [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Skipped::live feed is ${AGE} min old"
-          else
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Install websocket-client
+        if: steps.gate.outputs.skip != '1'
+        run: python3 -m pip install --quiet --disable-pip-version-check websocket-client requests
 
-      - name: Collect OANDA:XAUUSD from TradingView's datafeed
-        if: steps.guard.outputs.proceed == 'true'
+      - name: Pull XAUUSD 8 timeframes from TradingView
+        if: steps.gate.outputs.skip != '1'
         run: |
-          cd "$GITHUB_WORKSPACE"
-          python3 -m refresh.tv_snapshot XAUUSD | tee /tmp/snapshot.json
+          cd /home/user
           python3 - <<'EOF'
-          import json, sys
-          txt = open('/tmp/snapshot.json').read()
-          start = txt.index('{')
-          d = json.loads(txt[start:])
-          assert d['series'] >= 7, 'only %d timeframes came back' % d['series']
-          print('collected %d series, newest bar %dZ' % (d['series'], int(d['newestBar'])))
+          from refresh import charts, common as C
+          r = charts.run(scope='gold')
+          C.log('live-charts: %s' % r)
           EOF
 
-      # R69: the positioning chain and the depth terminal read this snapshot. Their HTTP
-      # endpoints refuse a browser on our domain (no CORS), so a server reads them here and
-      # the pages fetch one file from our own site. Provider and venue names are replaced
-      # with neutral labels inside the file, which is why it can be served publicly.
-      - name: Collect the book / positioning snapshot
-        run: python3 tools/fetch-book-snapshot.py
-
-      - name: Deploy both sites
-        if: steps.guard.outputs.proceed == 'true'
+      - name: Deploy both sites to Surge
+        if: steps.gate.outputs.skip != '1'
         env:
           SURGE_LOGIN: ${{ secrets.SURGE_LOGIN }}
           SURGE_TOKEN: ${{ secrets.SURGE_TOKEN }}
+          XEF_KEEP_BUILD_STAMP: '1'
         run: bash /home/user/deploy-sites.sh
 
-      - name: Verify the LIVE site serves this collection
-        if: steps.guard.outputs.proceed == 'true'
+      - name: Commit updated gold bars
+        if: steps.gate.outputs.skip != '1'
         run: |
-          python3 - <<'EOF'
-          import json, time, urllib.request, os
-          want = json.load(open(os.environ['GITHUB_WORKSPACE'] + '/xau-elite-fonda/public/feed/asof.json'))
-          for attempt in range(8):
-              try:
-                  got = json.load(urllib.request.urlopen(
-                      'https://xau-elite-fx.surge.sh/feed/asof.json?t=%d' % time.time(), timeout=20))
-                  if got.get('asOf') == want['asOf'] and got.get('barSec') == want['barSec']:
-                      print('LIVE feed matches this run: %s' % got['asOf'])
-                      raise SystemExit(0)
-              except SystemExit:
-                  raise
-              except Exception as e:
-                  print('  waiting for surge…', e)
-              time.sleep(5)
-          raise SystemExit('LIVE feed still not serving %s' % want['asOf'])
-          EOF
+          cd /home/user
+          git config user.name  "xef-data-bot"
+          git config user.email "xef-data-bot@users.noreply.github.com"
+          git add chartdata-master/chart-XAUUSD-*.json \
+                  xau-elite-fonda/public/chartdata/chart-XAUUSD-*.json \
+                  xau-elite-fonda2/public/chartdata/chart-XAUUSD-*.json
+          git diff --cached --quiet && exit 0
+          git commit -m "charts: XAUUSD $(date -u '+%Y-%m-%d %H:%M UTC')"
+          for attempt in 1 2 3; do
+            git pull --rebase --autostash origin main && git push origin main && break
+            sleep 2
+          done
 
-      # NOT committed on purpose: surge is the delivery path, and committing ~1 MB of fresh
-      # bars every 20 minutes would bloat the repo (and race other jobs on the same files).
-      # The 3-hourly full refresh keeps the in-repo chartdata + manifest snapshots.
+      - name: Auto-dispatch Daily Cycle when Desk is Behind Last Closed Candle
+        if: steps.gate.outputs.skip != '1'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_TOKEN_FALLBACK: ${{ github.token }}
+        run: |
+          if [ "$(TZ=Africa/Casablanca date '+%u')" = "6" ]; then
+            echo "Saturday in Casablanca — market closed, skipping daily-cycles check"
+            exit 0
+          fi
+          set +e
+          OUT=$(python3 /home/user/desk_fresh.py)
+          RC=$?
+          set -e
+          echo "desk_fresh after gold-bars update: $OUT (exit $RC)"
+          if [ "$RC" -eq 0 ]; then
+            echo "Desk is FRESH — no daily-cycles dispatch needed."
+            exit 0
+          fi
+          echo "::notice::Desk is BEHIND ($OUT) — checking if daily-cycles.yml is already running on callmeforex/xef-runner..."
+          python3 - <<'PY'
+          import json, os, urllib.request
+          tok = os.environ.get("GH_PAT") or os.environ.get("GH_TOKEN_FALLBACK") or ""
+          if not tok:
+              print("no token available for workflow dispatch")
+              raise SystemExit(0)
+          headers = {
+              "Authorization": f"Bearer {tok}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "xef-auto-dispatcher",
+          }
+          runs_url = "https://api.github.com/repos/callmeforex/xef-runner/actions/workflows/daily-cycles.yml/runs?per_page=5"
+          try:
+              req = urllib.request.Request(runs_url, headers=headers)
+              runs = json.loads(urllib.request.urlopen(req, timeout=15).read()).get("workflow_runs", [])
+              active = [r for r in runs if r.get("status") in ("in_progress", "queued", "waiting", "requested", "pending")]
+              if active:
+                  print(f"daily-cycles.yml already active/queued (run {active[0].get('id')} status={active[0].get('status')}) — skipping duplicate dispatch")
+                  raise SystemExit(0)
+          except SystemExit:
+              raise
+          except Exception as e:
+              print(f"warning: could not check active runs ({e})")
+          disp_url = "https://api.github.com/repos/callmeforex/xef-runner/actions/workflows/daily-cycles.yml/dispatches"
+          body = json.dumps({"ref": "main", "inputs": {"cycle": "daily-bias", "rebuild": "if-behind"}}).encode()
+          try:
+              req = urllib.request.Request(disp_url, data=body, headers={**headers, "Content-Type": "application/json"}, method="POST")
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  print(f"Successfully dispatched daily-cycles.yml on callmeforex/xef-runner (HTTP {r.status})")
+          except Exception as e:
+              print(f"warning: could not dispatch daily-cycles.yml ({e})")
+          PY
