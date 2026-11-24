@@ -169,6 +169,9 @@ jobs:
           else
             python3 -m refresh.bias_all --symbols "$STALE_SYMS"
           fi
+          python3 -m refresh.extras || true
+          python3 -m refresh.audit14 || true
+          python3 -m refresh.audit_all || true
 
       - name: Deploy both sites to Surge
         if: env.SKIP_REFRESH != '1'
