@@ -43,7 +43,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+          python3 -m pip install --break-system-packages --quiet --disable-pip-version-check -r requirements.txt 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
           python3 -c "import requests, bs4, websocket; print('deps ok — websocket', websocket.__version__)"
 
       - name: Cost guard — skip if live data is already fresh AND desk is not behind

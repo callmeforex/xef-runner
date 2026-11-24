@@ -110,7 +110,7 @@ jobs:
 
       - name: Install refresh dependencies
         run: |
-          python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+          python3 -m pip install --break-system-packages --quiet --disable-pip-version-check -r requirements.txt 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
           python3 -c "import websocket; print('websocket-client', websocket.__version__)"
 
       - name: Decide which cycle to run (and skip when today's desk is already built)
@@ -462,7 +462,7 @@ jobs:
           exit $BAD
 
       - name: Commit updated data back to the repo (keeps history + next run's ledger)
-        if: env.SKIP != '1'
+        if: always() && env.SKIP != '1'
         run: |
           cd /home/user
           git config user.name  "xef-cycle-bot"

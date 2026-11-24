@@ -54,7 +54,7 @@ jobs:
 
       - name: Install websocket-client
         if: steps.gate.outputs.skip != '1'
-        run: python3 -m pip install --quiet --disable-pip-version-check websocket-client requests
+        run: python3 -m pip install --break-system-packages --quiet --disable-pip-version-check websocket-client requests 2>/dev/null || python3 -m pip install --quiet --disable-pip-version-check websocket-client requests
 
       - name: Pull XAUUSD 8 timeframes from TradingView
         if: steps.gate.outputs.skip != '1'
@@ -82,7 +82,13 @@ jobs:
           git config user.email "xef-data-bot@users.noreply.github.com"
           git add chartdata-master/chart-XAUUSD-*.json \
                   xau-elite-fonda/public/chartdata/chart-XAUUSD-*.json \
-                  xau-elite-fonda2/public/chartdata/chart-XAUUSD-*.json
+                  xau-elite-fonda2/public/chartdata/chart-XAUUSD-*.json \
+                  xau-elite-fonda/public/bias-all.json \
+                  xau-elite-fonda2/public/bias-all.json \
+                  xau-elite-fonda/public/bias/*.json \
+                  xau-elite-fonda2/public/bias/*.json \
+                  xau-elite-fonda/public/sniper/*.json \
+                  xau-elite-fonda2/public/sniper/*.json
           git diff --cached --quiet && exit 0
           git commit -m "charts: XAUUSD $(date -u '+%Y-%m-%d %H:%M UTC')"
           for attempt in 1 2 3; do
