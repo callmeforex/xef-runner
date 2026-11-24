@@ -223,13 +223,14 @@ jobs:
         timeout-minutes: 60
         env:
           ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
-          ASHNA_MODEL: gpt-6.1-sol
-          BIAS_MODEL: gpt-6.1-sol
+          ASHNA_MODEL: beam-free
+          BIAS_MODEL: beam-free
           CI_KEY: ${{ secrets.CI_KEY }}
-          GOLD_MODEL: ampersand-v0.1
-          PAIR_MODEL: glm-5.3-flash
-          GOLD_EFFORT: high
-          PAIR_EFFORT: medium
+          GOLD_MODEL: beam-free
+          PAIR_MODEL: beam-free
+          GOLD_EFFORT: low
+          PAIR_EFFORT: low
+          BIAS_WORKERS: '6'
           TD_KEY: ${{ secrets.TD_KEY }}
           LSE_API_KEY: ${{ secrets.LSE_API_KEY || secrets.LSE }}
           OM_MCP_TOKEN: ${{ secrets.OM_MCP_TOKEN }}

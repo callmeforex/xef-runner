@@ -157,11 +157,11 @@ jobs:
         env:
           ASHNA_KEY: ${{ secrets.ASHNA_KEY }}
           CI_KEY: ${{ secrets.CI_KEY }}
-          GOLD_MODEL: ampersand-v0.1
-          PAIR_MODEL: glm-5.3-flash
-          GOLD_EFFORT: high
-          PAIR_EFFORT: medium
-          BIAS_WORKERS: '3'
+          GOLD_MODEL: beam-free
+          PAIR_MODEL: beam-free
+          GOLD_EFFORT: low
+          PAIR_EFFORT: low
+          BIAS_WORKERS: '6'
         run: |
           cd /home/user
           if [ "$STALE_SYMS" = "ALL" ]; then
