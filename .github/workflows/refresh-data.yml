@@ -185,10 +185,11 @@ jobs:
           python3 tools/i18n-purity.py purge || echo "::warning::purity purge failed"
           python3 tools/i18n-build-bundles.py || echo "::warning::locale bundle rebuild failed"
           T1=$(date +%s)
-          # R176b: the 9 languages are relay-bound, not CPU-bound — run them CONCURRENTLY.
+          # R176b: the 8 languages are relay-bound, not CPU-bound — run them CONCURRENTLY.
+          # R178: zh removed by owner order — Chinese is no longer offered or translated.
           # Serial cost measured on run 45775344975: ~2.5 min/lang (≈1400 fresh strings
           # per language every hour, because narratives embed the hourly counts/dates).
-          for L in fr it es de pt ar nl tr zh; do
+          for L in fr it es de pt ar nl tr; do
             ( python3 tools/localize-data.py "$L" || echo "::warning::localize-data $L incomplete" ) &
           done
           wait
