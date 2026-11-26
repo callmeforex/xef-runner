@@ -29,7 +29,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout private repo
         uses: actions/checkout@v4
@@ -172,6 +172,21 @@ jobs:
           python3 -m refresh.extras || true
           python3 -m refresh.audit14 || true
           python3 -m refresh.audit_all || true
+
+      - name: Localize regenerated prose ATOMICALLY with this refresh (R176)
+        if: env.SKIP_REFRESH != '1'
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          cd /home/user
+          python3 tools/i18n-audit-pack.py || echo "::warning::audit-pack incomplete (cache resumes next run)"
+          python3 tools/i18n-purity.py purge || echo "::warning::purity purge failed"
+          python3 tools/i18n-build-bundles.py || echo "::warning::locale bundle rebuild failed"
+          for L in fr it es de pt ar nl tr zh; do
+            python3 tools/localize-data.py "$L" || echo "::warning::localize-data $L incomplete"
+          done
+          python3 tools/localize-data.py assemble || echo "::warning::sidecar assemble failed"
+          echo "sidecar bytes: $(stat -c%s xau-elite-fonda2/public/data-i18n.json 2>/dev/null || echo 0)"
 
       - name: Deploy both sites to Surge
         if: env.SKIP_REFRESH != '1'
