@@ -29,7 +29,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout private repo
         uses: actions/checkout@v4
@@ -176,17 +176,26 @@ jobs:
       - name: Localize regenerated prose ATOMICALLY with this refresh (R176)
         if: env.SKIP_REFRESH != '1'
         continue-on-error: true
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           cd /home/user
+          T0=$(date +%s)
           python3 tools/i18n-audit-pack.py || echo "::warning::audit-pack incomplete (cache resumes next run)"
+          echo "audit-pack seconds: $(( $(date +%s) - T0 ))"
           python3 tools/i18n-purity.py purge || echo "::warning::purity purge failed"
           python3 tools/i18n-build-bundles.py || echo "::warning::locale bundle rebuild failed"
+          T1=$(date +%s)
+          # R176b: the 9 languages are relay-bound, not CPU-bound — run them CONCURRENTLY.
+          # Serial cost measured on run 45775344975: ~2.5 min/lang (≈1400 fresh strings
+          # per language every hour, because narratives embed the hourly counts/dates).
           for L in fr it es de pt ar nl tr zh; do
-            python3 tools/localize-data.py "$L" || echo "::warning::localize-data $L incomplete"
+            ( python3 tools/localize-data.py "$L" || echo "::warning::localize-data $L incomplete" ) &
           done
+          wait
+          echo "localize seconds: $(( $(date +%s) - T1 ))"
           python3 tools/localize-data.py assemble || echo "::warning::sidecar assemble failed"
           echo "sidecar bytes: $(stat -c%s xau-elite-fonda2/public/data-i18n.json 2>/dev/null || echo 0)"
+          echo "chain total seconds: $(( $(date +%s) - T0 ))"
 
       - name: Deploy both sites to Surge
         if: env.SKIP_REFRESH != '1'
